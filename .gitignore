@@ -1,0 +1,8 @@
+*.pth
+tsne/
+result/
+backup/
+outputs/
+process_data/
+nohup.out
+test.py
