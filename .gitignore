@@ -1,5 +1,7 @@
 *.pth
 tsne/
+best/
+__pycache__/
 result/
 backup/
 outputs/

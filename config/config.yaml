@@ -2,10 +2,12 @@ patch_numbers: 16
 trans_linear_in_dim: 512
 use_temporal_attention: True
 
+check_video_times: False
+
 dataset: ActivityNet
 task: training
 way: 1
-shot: 1
+shot: 5
 query_per_class: 1
 fps: 30
 

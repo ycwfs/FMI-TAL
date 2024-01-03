@@ -4,7 +4,7 @@ from torch import nn,optim
 from torch.utils.data import DataLoader
 from dataset import VideoDataset
 from torch.nn.parallel import DataParallel
-from models import seed_everything
+#from models import seed_everything
 import models
 import hydra
 import numpy as np
@@ -13,7 +13,7 @@ import numpy as np
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print('training on {}'.format(device))
 
-Epoches = 10000
+Epoches = 10
 lr = 0.0001
 
 # compute iou
@@ -25,13 +25,57 @@ lr = 0.0001
 #     else:
 #         return 0
 
-def iou_conculate(thresh,gt,preds):
-    out = torch.max(preds[1],gt[1]) - torch.min(preds[0],gt[0])
-    inter = torch.min(preds[1],gt[1]) - torch.max(preds[0],gt[0])
+def iou_conculate(thresh,gt,preds,compute_only = False):
+    out = torch.floor(torch.max(preds[1],gt[1]) - torch.min(preds[0],gt[0]))
+    inter = torch.max(torch.tensor(0),torch.ceil(torch.min(preds[1],gt[1]) - torch.max(preds[0],gt[0])))
+    if compute_only:
+        return inter/out
+    else:
+        if inter/out >= thresh:
+            return 1
+        else:
+            return 0
+    
+def np_iou_conculate(thresh,gt,preds):
+    out = np.floor(max(preds[1],gt[1]) - min(preds[0],gt[0]))
+    inter = max(0,np.ceil(min(preds[1],gt[1]) - max(preds[0],gt[0])))
     if inter/out >= thresh:
         return 1
     else:
         return 0
+    
+def postprocess(preds):
+    # preds [2,T], mean the probability of the start and end points, compute top 50 combinations and use NMS to get the final 20 results
+    
+    # Get the probabilities of start and end points
+    start_probs = preds[0]
+    end_probs = preds[1]
+    
+    # Compute the scores as the product of start and end probabilities
+    scores = torch.outer(start_probs, end_probs).cpu()
+    
+    # Get the top 30 combinations based on scores
+    top_indices = torch.topk(scores.flatten(), k=50).indices
+    top_combinations = np.unravel_index(top_indices.cpu().numpy(), scores.shape)
+    
+    # Apply non-maximum suppression (NMS) to get the final 20 results
+    final_results = []
+    for i in range(len(top_combinations[0])):
+        start = top_combinations[0][i]
+        end = top_combinations[1][i]
+        # Check if the end is greater than the start
+        if end > start:
+            overlap = False
+            for result in final_results:
+                if np_iou_conculate(0.8, result, (start, end)):
+                    overlap = True
+                    break
+            if not overlap:
+                final_results.append((start, end))
+            if len(final_results) == 20:
+                break
+    
+    return final_results
 
 @hydra.main(config_path="config", config_name="config",version_base=None)
 def train_model(args):
@@ -57,7 +101,9 @@ def train_model(args):
         iou1_corrects = 0.0
         iou3_corrects = 0.0
         iou5_corrects = 0.0
+        iou6_corrects = 0.0
         iou7_corrects = 0.0
+        iou8_corrects = 0.0
         iou9_corrects = 0.0
 
         model.train()
@@ -67,6 +113,7 @@ def train_model(args):
                 query_feature = inputs['qf'][0].cuda()
                 class_label = inputs['vc'].cuda()
                 segment_label = inputs['qsl'][0].cuda()
+                #vt = inputs['vt']
 
                 optimizer.zero_grad()
 
@@ -74,9 +121,25 @@ def train_model(args):
 
                 preds = nn.Softmax(dim=-1)(logical).argmax(dim=-1)
 
-                class_loss = class_criterion(logical.unsqueeze(0), class_label.long())
-                reg_loss = regress_criterion(reg, segment_label.float())
+                start = nn.Softmax(dim=-1)(reg[0])
+                end = nn.Softmax(dim=-1)(reg[1])
+                reg = torch.stack((start,end),dim=0)
+                reg = torch.tensor(postprocess(reg)).cuda()
+                
+                ious = []
+                # compute the max iou between the predict and ground truth
+                for i in range(len(reg)):
+                    iou = iou_conculate(0.5,segment_label,reg[i],True)
+                    ious.append(iou)
+                    # get the max iou and its reg
+                    if iou >= max(ious):
+                        max_iou = iou
+                        max_reg = reg[i]
 
+                class_loss = class_criterion(logical.unsqueeze(0), class_label.long())
+                reg_loss = regress_criterion(max_reg, segment_label.float())
+
+                # add weight(param) to class_loss and reg_loss?????
                 loss = class_loss + reg_loss
                 # ????????????
                 # reg = torch.round(reg)
@@ -85,32 +148,36 @@ def train_model(args):
 
                 running_loss += loss.item()
                 class_corrects += torch.sum(preds == class_label.data)
-                iou1_corrects += np.sum(iou_conculate(0.1,segment_label,reg))
-                iou3_corrects += np.sum(iou_conculate(0.3,segment_label,reg))
-                iou5_corrects += np.sum(iou_conculate(0.5,segment_label,reg))
-                iou7_corrects += np.sum(iou_conculate(0.7,segment_label,reg))
-                iou9_corrects += np.sum(iou_conculate(0.9,segment_label,reg))
+                iou1_corrects += np.sum(iou_conculate(0.1,segment_label,max_reg))
+                iou3_corrects += np.sum(iou_conculate(0.3,segment_label,max_reg))
+                iou5_corrects += np.sum(iou_conculate(0.5,segment_label,max_reg))
+                iou6_corrects += np.sum(iou_conculate(0.6,segment_label,max_reg))
+                iou7_corrects += np.sum(iou_conculate(0.7,segment_label,max_reg))
+                iou8_corrects += np.sum(iou_conculate(0.8,segment_label,max_reg))
+                iou9_corrects += np.sum(iou_conculate(0.9,segment_label,max_reg))
 
         epoch_loss = running_loss / len(train_dataloader.dataset)
         epoch_acc = class_corrects / len(train_dataloader.dataset)
         epoch_iou1reg = iou1_corrects / len(train_dataloader.dataset)
         epoch_iou3reg = iou3_corrects / len(train_dataloader.dataset)
         epoch_iou5reg = iou5_corrects / len(train_dataloader.dataset)
+        epoch_iou6reg = iou6_corrects / len(train_dataloader.dataset)
         epoch_iou7reg = iou7_corrects / len(train_dataloader.dataset)
+        epoch_iou8reg = iou8_corrects / len(train_dataloader.dataset)
         epoch_iou9reg = iou9_corrects / len(train_dataloader.dataset)
-        reg_mean = np.mean([epoch_iou1reg,epoch_iou3reg,epoch_iou5reg,epoch_iou7reg,epoch_iou9reg])
+        reg_mean = np.mean([epoch_iou1reg,epoch_iou3reg,epoch_iou5reg,epoch_iou6reg,epoch_iou7reg,epoch_iou8reg,epoch_iou9reg])
 
         # first loop mean_acc is empty,how to solve it?
         if len(mean_acc) == 0 or reg_mean > max(mean_acc):
-            torch.save(model.state_dict(), './result/{}class{}reg{}.pth'.format(epoch,np.round(float(epoch_acc),4),np.round(reg_mean,4)))
+            torch.save(model.state_dict(), 'best/{}class{}reg{}.pth'.format(epoch,np.round(float(epoch_acc),4),np.round(reg_mean,4)))
             mean_acc.append(reg_mean)
 
         if epoch+1 % 50 == 0 or epoch_acc >= 0.85:
             torch.save(model.state_dict(), '{}acc{}.pth'.format(epoch,np.round(float(epoch_acc),4)))
-        print("[{}] Epoch: {}/{} Loss: {} Acc: {}, 0.1:{}, 0.3:{}, 0.5:{}, 0.7:{}, 0.9:{}, mean:{}".format('training', epoch+1, Epoches, epoch_loss, epoch_acc, epoch_iou1reg,epoch_iou3reg,epoch_iou5reg,epoch_iou7reg,epoch_iou9reg,reg_mean))
+        print("[{}] Epoch: {}/{} Loss: {} Acc: {}, 0.1:{}, 0.3:{}, 0.5:{}, 0.6:{},0.7:{}, 0.8:{}, 0.9:{}, mean:{}".format('training', epoch+1, Epoches, epoch_loss, epoch_acc, epoch_iou1reg,epoch_iou3reg,epoch_iou5reg,epoch_iou6reg,epoch_iou7reg,epoch_iou8reg,epoch_iou9reg,reg_mean))
         scheduler.step()
-
-    torch.save(model.state_dict(), 'result/lastresult.pth')
+        
+    torch.save(model.state_dict(), 'best/lastresult.pth')
 
 
 # todo: how to conculate loss???  adjust model, input feature length to decoder, encoder(support feature self-attention), decoder(query and support feature cross-attention)

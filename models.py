@@ -383,70 +383,81 @@ class EncoderLayer(nn.Module):
         super(EncoderLayer, self).__init__()
         self.enc_self_attn = MultiHeadAttention(args)
         self.pos_ffn = PoswiseFeedForwardNet(args)
-    def forward(self,query_sequence,support_sequence):
+    def forward(self,query_sequence):
         # enc_outputs: [batch_size, src_len, d_model], attn: [batch_size, n_heads, src_len, src_len]
-        encoder_output, _ = self.enc_self_attn(query_sequence,query_sequence,support_sequence)
+        encoder_output, _ = self.enc_self_attn(query_sequence,query_sequence,query_sequence)
         encoder_output = self.pos_ffn(encoder_output)
         return encoder_output
-
 
 class Encoder(nn.Module):
     def __init__(self,args):
         super(Encoder,self).__init__()
         self.positionalencoding = Positional_Encoding(args.d_model,0.1)
         self.encoder_layers = nn.ModuleList([EncoderLayer(args) for _ in range(6)])
-    def forward(self,query_sequence,support_sequence):
+    def forward(self,query_sequence):
         query_sequence = self.positionalencoding(query_sequence)
-        support_sequence = self.positionalencoding(support_sequence)
         for encoder_layer in self.encoder_layers:
-            query_sequence = encoder_layer(query_sequence,support_sequence)
+            query_sequence = encoder_layer(query_sequence)
         return query_sequence
         
-class Decoder(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.average = nn.AdaptiveAvgPool1d(100)
-        self.tcn =  nn.Conv1d(512, 512, 1)
-        # self.decode = nn.Sequential(
-        #     nn.Linear(512, 512),
-        #     nn.ReLU(),
-        #     nn.Linear(512, 256),
-        #     nn.ReLU(),
-        #     nn.Linear(256, 128),
-        #     nn.ReLU(),
-        #     nn.Linear(128, 64),
-        #     nn.ReLU(),
-        #     nn.Linear(64, 32),
-        #     nn.ReLU(),
-        #     nn.Linear(32,1),
-        # )
-        self.predict = nn.Linear(51200, 2)
-    
-    def forward(self, x):
-        x = self.tcn(x.transpose(1,2)).transpose(1,2)
+class Decoderlayer(nn.Module):
+    def __init__(self,args):
+        super(Decoderlayer,self).__init__()
+        self.dec_self_attn = MultiHeadAttention(args)
+        self.enc_dec_attention = MultiHeadAttention(args)
+        self.pos_ffn = PoswiseFeedForwardNet(args)
 
-        x = self.average(x.transpose(1,2)).transpose(1,2)
-        #x = self.decoder(x)
- 
-        x = x.reshape(-1)
+    def forward(self,query_sequence,support_sequence):
+        query_sequence, _ = self.dec_self_attn(query_sequence,query_sequence,query_sequence)
+        decoder_output, _ = self.enc_dec_attention(query_sequence,support_sequence,support_sequence)
+        decoder_output = self.pos_ffn(decoder_output)
+        return decoder_output
+
+class Decoder(nn.Module):
+    def __init__(self,args):
+        super(Decoder,self).__init__()
+        self.positionalencoding = Positional_Encoding(args.d_model,0.1)
+        self.decoder_layers = nn.ModuleList([Decoderlayer(args) for _ in range(6)])
+    def forward(self,query_sequence,support_sequence):
+        support_sequence = self.positionalencoding(support_sequence)
+        for decoder_layer in self.decoder_layers:
+            query_sequence = decoder_layer(query_sequence,support_sequence)
+        return query_sequence
         
-        x = self.predict(x)
-        return x
 
 class TSN_Transformer(nn.Module):
     def __init__(self,args):
         super(TSN_Transformer,self).__init__()
         self.encoder = Encoder(args)
-        self.decoder = Decoder()
+        self.decoder = Decoder(args)
+        #self.average = nn.AdaptiveMaxPool1d(500)
+        #self.projection = nn.Linear(800*512,2)
+        self.start_projection = nn.Sequential(nn.Conv1d(512,256,1),
+                                        nn.Conv1d(256,128,1),
+                                        nn.Conv1d(128,1,1))
+        self.end_projection = nn.Sequential(nn.Conv1d(512,256,1),
+                                nn.Conv1d(256,128,1),
+                                nn.Conv1d(128,1,1))
 
     def forward(self,query_sequence,support_sequence):
         '''
         query_sequence: [batch_size, seq_len, d_model]
         support_sequence: [batch_size, seq_len, d_model]
         '''
-        query_sequence = self.encoder(query_sequence,support_sequence)
-        out = self.decoder(query_sequence)
-        return out
+        predict_len = query_sequence.shape[1]
+        encoder_output = self.encoder(query_sequence)
+        out = self.decoder(encoder_output,support_sequence) # [batch_size, seq_len, d_model]
+        outs = torch.randn(1,800,512).to('cuda')
+        if predict_len != 800:
+            outs[:,:predict_len,:] = out
+            outs[:,predict_len:,:] = -torch.inf
+        #out = self.average(out.transpose(1,2)).transpose(1,2)
+        start = self.start_projection(outs.transpose(1,2))
+        start = start.squeeze(1).squeeze(0)[:predict_len]
+        end = self.end_projection(outs.transpose(1,2))
+        end = end.squeeze(1).squeeze(0)[:predict_len]
+        outs = torch.stack((start,end),dim=0)
+        return outs
 
 
 class RSTRM(nn.Module):
@@ -462,12 +473,14 @@ class RSTRM(nn.Module):
         self.spitial_attention = spitial_attention(self.args.trans_linear_in_dim,self.args.patch_numbers)
         self.support_channel_attention = channel_attention(self.args.trans_linear_in_dim)
         self.query_channel_attention = channel_attention(self.args.trans_linear_in_dim)
-        self.averagepool = nn.AdaptiveAvgPool3d((40,None,None))
+        self.averagepool = nn.AdaptiveMaxPool3d((40,None,None))
+        self.squeeze_query_patch = nn.Conv3d(512,512,(1,4,4))
+        self.squeeze_support_patch = nn.Conv3d(512,512,(1,4,4))
 
         if args.use_conv:
-            self.classfication = nn.Sequential(nn.Conv3d(args.trans_linear_in_dim,256,(1,1,1)),
-                                               nn.ReLU(),
-                                               nn.Linear(81920,self.class_numbers))
+            self.classfication = nn.Sequential(nn.Conv3d(args.trans_linear_in_dim,512,(1,4,4)),
+                                               nn.ReLU())
+            self.last = nn.Linear(512*20,self.class_numbers)
         else:
             self.classfication = nn.Linear(163840,self.class_numbers)
 
@@ -475,9 +488,6 @@ class RSTRM(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self,query_feature,support_feature):
-
-        # self.arg.seq_len = support_videos.shape[2]
-        self.query_seq_len = query_feature.shape[2]
         # dynamic seq_len ??????
         
         query_feature = query_feature.squeeze(0) # [1,channel,seq_len,4,4] -> [channel,seq_len,4,4]
@@ -493,32 +503,37 @@ class RSTRM(nn.Module):
         indices,_,_ = self.sampler(sampler_infea) # inuput:[bs,channel,40] -> indices [bs,10,40] * reshape_feature [bs,40,-1] = [bs,10,512,4,4]
         sampled_feature = torch.bmm(indices,average_qf.reshape(1,self.args.sampler_seq_len,-1)).reshape(1,-1,10,4,4) # [bs,512,10,4,4]
 
+        ## logits
+        # for 1 way 1 shot, we only need to tackle the support video once
+        support_feature = support_feature.squeeze(0)
+        support_feature = support_feature.reshape(-1,self.args.trans_linear_in_dim,self.args.patch_numbers).transpose(2,1) # [channel,seq_len,4,4] -> [seq_len,4x4,channel]
+        support_spitial_attention_feature,support_attn_map = self.spitial_attention(support_feature) # [seq_len,4x4,channel]
 
-        if self.args.shot == 1:
-            # for 1 way 1 shot, we only need to tackle the support video once
-            support_feature = support_feature.squeeze(0)
-            support_feature = support_feature.reshape(-1,self.args.trans_linear_in_dim,self.args.patch_numbers).transpose(2,1) # [channel,seq_len,4,4] -> [seq_len,4x4,channel]
-            support_spitial_attention_feature,support_attn_map = self.spitial_attention(support_feature) # [seq_len,4x4,channel]
+        # same channel attention  support_spitial_channel_attention_feature = self.support_channel_attention(support_spitial_attention_feature) # [seq_len,16,channel]
+        support_spitial_channel_attention_feature = self.query_channel_attention(support_spitial_attention_feature) # [seq_len,16,channel]
+        support_seq_len = support_spitial_channel_attention_feature.shape[0]
+        # choose 10 seq_len to contact from support feature evenly [seq_len,16,channel] -> [10,16,channel]
+        choosed_support_feature = support_spitial_channel_attention_feature[torch.linspace(0, support_seq_len-1, self.args.k).long()] # [seq_len,16,channel] -> [sampler_seq_len,16,channel]
 
-            support_spitial_channel_attention_feature = self.support_channel_attention(support_spitial_attention_feature) # [seq_len,16,channel]
-            seq_len = support_spitial_channel_attention_feature.shape[0]
-            # choose 10 seq_len to contact from support feature evenly [seq_len,16,channel] -> [10,16,channel]
-            choosed_support_feature = support_spitial_channel_attention_feature[torch.linspace(0, seq_len-1, self.args.k).long()] # [seq_len,16,channel] -> [sampler_seq_len,16,channel]
+        # contact 10 seq_len query video [10,512,4,4] and support video [seq_len,16,512] for classification
+        classify_f = torch.concat((sampled_feature.squeeze(0).reshape(-1,self.args.patch_numbers,self.args.trans_linear_in_dim),choosed_support_feature),dim=0) #[20,16,512]
+        # need conv???
+        #logits = self.last(self.classfication(classify_f.reshape(self.args.trans_linear_in_dim,-1,4,4).unsqueeze(0)).reshape(-1)) # [1,512,20,4,4] -> [1,512,20,1,1] -> [1,512,20]
+        logits = self.classfication(classify_f.reshape(-1))
 
-            # contact 10 seq_len query video [10,512,4,4] and support video [seq_len,16,512] for classification
-            classify_f = torch.concat((sampled_feature.squeeze(0).reshape(-1,self.args.patch_numbers,self.args.trans_linear_in_dim),choosed_support_feature),dim=0) #[20,16,512]
-            # need conv???
-            logits = self.classfication(classify_f.reshape(-1))
-
-
-            # regression
-            aug_query_feature = (sampled_feature.mean(dim=2,keepdim=True) + query_spitial_channel_attention_feature).mean(-1).mean(-1) #[1,512,seq_len]
-            support_spitial_channel_attention_feature = F.interpolate(support_spitial_channel_attention_feature.mean(-2).unsqueeze(0).transpose(1,2),size=(aug_query_feature.shape[2]),mode='nearest') #[1,512,seq_len] linear?
-            reg = self.tsn_transformer(aug_query_feature.transpose(1,2),support_spitial_channel_attention_feature.transpose(1,2))
-        
-            return logits,reg,query_attn_map,support_attn_map
+        # use conv3d instead of mean
+        #aug_query_feature = (sampled_feature.mean(dim=2,keepdim=True) + query_spitial_channel_attention_feature).mean(-1).mean(-1) #[1,512,seq_len]
+        aug_query_feature = self.squeeze_query_patch((sampled_feature.mean(dim=2,keepdim=True) + query_spitial_channel_attention_feature)).squeeze(-1).squeeze(-1) #[1,512,seq_len,4,4] -> [1,512,seq_len]
+        #aug_query_feature = query_spitial_channel_attention_feature.mean(-1).mean(-1) #[1,512,seq_len], add sampled_feature is better
+        query_seq_len = aug_query_feature.shape[2]
 
 
+        # for 1 way n shot
+        #aug_query_feature = F.interpolate(aug_query_feature,size=(support_seq_len),mode='nearest') #[1,512,seq_len]
+        reg = self.tsn_transformer(aug_query_feature.transpose(1,2),support_spitial_channel_attention_feature.mean(-2).unsqueeze(0))
+        return logits,reg,query_attn_map,support_attn_map
+
+### more support feature
 if __name__ == '__main__':
     @hydra.main(config_path='config', config_name='config',version_base=None)
     def main(cfg):
