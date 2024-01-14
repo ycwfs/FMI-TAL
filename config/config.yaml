@@ -1,13 +1,22 @@
 patch_numbers: 16
-trans_linear_in_dim: 512
+trans_linear_in_dim: 2048
 use_temporal_attention: True
 
+save_model: False
 check_video_times: False
 
+# multi task
+c: 0.3
+
+dataset_len: 1000
+
+#checkpoint: /data1/wangqiurui/code/DA TSNFormer/best/9class0.545reg0.6143.pth
+checkpoint: 
 dataset: ActivityNet
 task: training
 way: 1
-shot: 5
+shot: 1
+# 1shot: 75, 5shot: 78
 query_per_class: 1
 fps: 30
 
@@ -28,7 +37,7 @@ sigma_step: 1000
 dropout: 0.1
 ada: True
 
-d_model: 512
+d_model: 2048
 # Transformer Parameters
 d_ff: 2048 # FeedForward dimension
 d_k: 64
@@ -41,7 +50,8 @@ n_heads: 8  # number of heads in Multi-Head Attention
 data_paths:
   ActivityNet:
     original: /data1/wangqiurui/code/datasets/ActivityNet/v1-3/
-    extracted: /data1/wangqiurui/code/datasets/ActivityNet/c3dfeature/
+    extracted: /data1/wangqiurui/code/datasets/ActivityNet/extracted_frames2048/
+    #extracted: /data1/wangqiurui/code/datasets/ActivityNet/c3dfeature/
     annotation: /data1/wangqiurui/code/datasets/ActivityNet/anet1.3_tsp_filtered.json
     action_name: /data1/wangqiurui/code/datasets/ActivityNet/action_name.csv
   THUMOS14:

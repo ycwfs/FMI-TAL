@@ -6,5 +6,9 @@ result/
 backup/
 outputs/
 process_data/
-nohup.out
 test.py
+*.log
+*.out
+wandb/
+convres/
+*.ipynb

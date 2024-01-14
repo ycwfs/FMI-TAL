@@ -1,3 +1,4 @@
+from ast import arg
 import os
 import math
 import sys
@@ -65,14 +66,14 @@ class sub_linear(nn.Module):
         out = self.relu(out)
         out = self.out_feature(out)
         return out + x              # b x 16 x 2048
-class spitial_attention(nn.Module):
+class spatial_attention(nn.Module):
     def __init__(self,trans_linear_in_dim,patch_numbers):
-        super(spitial_attention, self).__init__()
+        super(spatial_attention, self).__init__()
         self.query_projection = nn.Linear(trans_linear_in_dim,trans_linear_in_dim)
         self.key_projection = nn.Linear(trans_linear_in_dim,trans_linear_in_dim)
         self.value_projection = nn.Linear(trans_linear_in_dim,trans_linear_in_dim)
 
-        self.position_encoding = PositionalEncoding(512,0.1)
+        self.position_encoding = PositionalEncoding(trans_linear_in_dim,0.1)
         self.softmax = nn.Softmax(dim=-1)
 
         # treat gamma as a learnable parameter
@@ -132,6 +133,7 @@ class channel_linear(nn.Module):
 class channel_attention(nn.Module):
     def __init__(self,channel_dim):
         super(channel_attention,self).__init__()
+        self.channel_dim = channel_dim
         self.conv1 = nn.Conv1d(channel_dim,channel_dim,1)
         self.channel_linear = channel_linear(channel_dim)
 
@@ -142,9 +144,9 @@ class channel_attention(nn.Module):
         '''
         fc = x.shape[0]
         residual1 = x
-        x = x.transpose(2,1).reshape(-1,512,16)
+        x = x.transpose(2,1).reshape(-1,self.channel_dim,16)
         x = self.conv1(x).transpose(2,1)
-        x = self.channel_linear(x).reshape(fc,16,512) + residual1
+        x = self.channel_linear(x).reshape(fc,16,self.channel_dim) + residual1
         # [seq_len,16,channel]
         return x
 
@@ -155,17 +157,17 @@ def order_topk(x, k=10):
         x = x[:,:,0]
     return F.one_hot(torch.sort(torch.topk(x, k=10, dim=-1)[-1])[0], list(x.shape)[-1]).transpose(-1,-2).float()
 class Generator(nn.Module):
-    def __init__(self, insize=512, outsize=512, z_dim=64, bias=False):
+    def __init__(self, args,insize=512, outsize=512, z_dim=64, bias=False):
         super().__init__()
-        self.insize = insize
-        self.outsize = outsize
+        self.insize = args.trans_linear_in_dim
+        self.outsize = args.trans_linear_in_dim
         self.z_dim = z_dim
         self.bias = bias
-        self.encoder = nn.Linear(insize, z_dim * 2)
+        self.encoder = nn.Linear(self.insize, z_dim * 2)
         if bias:
-            self.gen = nn.Linear(z_dim, outsize + 1)
+            self.gen = nn.Linear(z_dim, self.outsize + 1)
         else:
-            self.gen = nn.Linear(z_dim, outsize)
+            self.gen = nn.Linear(z_dim, self.outsize)
 
     def forward(self, task_context):
         # task_context: , insize
@@ -214,15 +216,15 @@ class Sampler(nn.Module):
     def __init__(self,args):
         super(Sampler,self).__init__()
         self.args = args
-        self.generator = Generator()
+        self.generator = Generator(args)
         if self.args.ada:
-            self.evaluator = nn.Sequential(PositionalEmbedding(d_model=1024, max_len=self.args.sampler_seq_len),
-                                            nn.Linear(1024, 512),
+            self.evaluator = nn.Sequential(PositionalEmbedding(d_model=self.args.trans_linear_in_dim*2, max_len=self.args.sampler_seq_len),
+                                            nn.Linear(self.args.trans_linear_in_dim*2, self.args.trans_linear_in_dim),
                                             nn.ReLU(),
                                             )
         else:
-            self.evaluator = nn.Sequential(PositionalEmbedding(d_model=1024, max_len=self.args.sampler_seq_len),
-                                            nn.Linear(1024, 512),
+            self.evaluator = nn.Sequential(PositionalEmbedding(d_model=self.args.trans_linear_in_dim*2, max_len=self.args.sampler_seq_len),
+                                            nn.Linear(self.args.trans_linear_in_dim*2, self.args.trans_linear_in_dim),
                                             nn.ReLU(),
                                             nn.Linear(512, 1),
                                             )
@@ -254,7 +256,7 @@ class Sampler(nn.Module):
     def forward(self, x, weight = None, category='support'):
         # [B, 1024, 40]
         x = x.transpose(-1,-2) # [B, 40, 1024]
-        dim,n = x.shape[1],x.shape[2]
+        n,dim = x.shape[1],x.shape[2]
         feature = x
 
         # Calculate the global feature of the whole video as a kind of guidance
@@ -408,7 +410,7 @@ class Decoderlayer(nn.Module):
         self.pos_ffn = PoswiseFeedForwardNet(args)
 
     def forward(self,query_sequence,support_sequence):
-        query_sequence, _ = self.dec_self_attn(query_sequence,query_sequence,query_sequence)
+        support_sequence, _ = self.dec_self_attn(support_sequence,support_sequence,support_sequence)
         decoder_output, _ = self.enc_dec_attention(query_sequence,support_sequence,support_sequence)
         decoder_output = self.pos_ffn(decoder_output)
         return decoder_output
@@ -428,16 +430,17 @@ class Decoder(nn.Module):
 class TSN_Transformer(nn.Module):
     def __init__(self,args):
         super(TSN_Transformer,self).__init__()
+        self.args = args
         self.encoder = Encoder(args)
         self.decoder = Decoder(args)
         #self.average = nn.AdaptiveMaxPool1d(500)
         #self.projection = nn.Linear(800*512,2)
-        self.start_projection = nn.Sequential(nn.Conv1d(512,256,1),
-                                        nn.Conv1d(256,128,1),
-                                        nn.Conv1d(128,1,1))
-        self.end_projection = nn.Sequential(nn.Conv1d(512,256,1),
-                                nn.Conv1d(256,128,1),
-                                nn.Conv1d(128,1,1))
+        self.start_projection = nn.Sequential(nn.Conv1d(args.trans_linear_in_dim,int(args.trans_linear_in_dim/2),1),
+                                        nn.Conv1d(int(args.trans_linear_in_dim/2),int(args.trans_linear_in_dim/4),1),
+                                        nn.Conv1d(int(args.trans_linear_in_dim/4),1,1))
+        self.end_projection = nn.Sequential(nn.Conv1d(args.trans_linear_in_dim,int(args.trans_linear_in_dim/2),1),
+                                        nn.Conv1d(int(args.trans_linear_in_dim/2),int(args.trans_linear_in_dim/4),1),
+                                        nn.Conv1d(int(args.trans_linear_in_dim/4),1,1))
 
     def forward(self,query_sequence,support_sequence):
         '''
@@ -447,7 +450,7 @@ class TSN_Transformer(nn.Module):
         predict_len = query_sequence.shape[1]
         encoder_output = self.encoder(query_sequence)
         out = self.decoder(encoder_output,support_sequence) # [batch_size, seq_len, d_model]
-        outs = torch.randn(1,800,512).to('cuda')
+        outs = torch.randn(1,800,self.args.trans_linear_in_dim).to('cuda')
         if predict_len != 800:
             outs[:,:predict_len,:] = out
             outs[:,predict_len:,:] = -torch.inf
@@ -470,19 +473,19 @@ class RSTRM(nn.Module):
         if args.dataset == 'ActivityNet':
             self.class_numbers = 200
 
-        self.spitial_attention = spitial_attention(self.args.trans_linear_in_dim,self.args.patch_numbers)
+        self.spatial_attention = spatial_attention(self.args.trans_linear_in_dim,self.args.patch_numbers)
         self.support_channel_attention = channel_attention(self.args.trans_linear_in_dim)
         self.query_channel_attention = channel_attention(self.args.trans_linear_in_dim)
         self.averagepool = nn.AdaptiveMaxPool3d((40,None,None))
-        self.squeeze_query_patch = nn.Conv3d(512,512,(1,4,4))
-        self.squeeze_support_patch = nn.Conv3d(512,512,(1,4,4))
+        self.squeeze_query_patch = nn.Conv3d(self.args.trans_linear_in_dim,self.args.trans_linear_in_dim,(1,4,4))
+        self.squeeze_support_patch = nn.Conv3d(self.args.trans_linear_in_dim,self.args.trans_linear_in_dim,(1,4,4))
 
         if args.use_conv:
             self.classfication = nn.Sequential(nn.Conv3d(args.trans_linear_in_dim,512,(1,4,4)),
                                                nn.ReLU())
             self.last = nn.Linear(512*20,self.class_numbers)
         else:
-            self.classfication = nn.Linear(163840,self.class_numbers)
+            self.classfication = nn.Linear(20*16*self.args.trans_linear_in_dim,self.class_numbers)
 
         self.softmax = nn.Softmax(dim=-1)
         self.relu = nn.ReLU()
@@ -492,9 +495,9 @@ class RSTRM(nn.Module):
         
         query_feature = query_feature.squeeze(0) # [1,channel,seq_len,4,4] -> [channel,seq_len,4,4]
         query_feature = query_feature.reshape(-1,self.args.trans_linear_in_dim,self.args.patch_numbers).transpose(2,1) # [channel,seq_len,4,4] -> [seq_len,4x4,channel]
-        query_spitial_attention_feature,query_attn_map = self.spitial_attention(query_feature) # [seq_len,4x4,channel] 160,16,512
+        query_spatial_attention_feature,query_attn_map = self.spatial_attention(query_feature) # [seq_len,4x4,channel] 160,16,512
 
-        query_spitial_channel_attention_feature = self.query_channel_attention(query_spitial_attention_feature) # [seq_len,16,channel]
+        query_spitial_channel_attention_feature = self.query_channel_attention(query_spatial_attention_feature) # [seq_len,16,channel]
 
         # for classify query feature use sampler
         query_spitial_channel_attention_feature = query_spitial_channel_attention_feature.reshape(self.args.trans_linear_in_dim,-1,4,4).unsqueeze(0) # [1,512,seq_len,4,4]
@@ -507,10 +510,10 @@ class RSTRM(nn.Module):
         # for 1 way 1 shot, we only need to tackle the support video once
         support_feature = support_feature.squeeze(0)
         support_feature = support_feature.reshape(-1,self.args.trans_linear_in_dim,self.args.patch_numbers).transpose(2,1) # [channel,seq_len,4,4] -> [seq_len,4x4,channel]
-        support_spitial_attention_feature,support_attn_map = self.spitial_attention(support_feature) # [seq_len,4x4,channel]
+        support_spatial_attention_feature,support_attn_map = self.spatial_attention(support_feature) # [seq_len,4x4,channel]
 
-        # same channel attention  support_spitial_channel_attention_feature = self.support_channel_attention(support_spitial_attention_feature) # [seq_len,16,channel]
-        support_spitial_channel_attention_feature = self.query_channel_attention(support_spitial_attention_feature) # [seq_len,16,channel]
+        # same channel attention  support_spitial_channel_attention_feature = self.support_channel_attention(support_spatial_attention_feature) # [seq_len,16,channel]
+        support_spitial_channel_attention_feature = self.query_channel_attention(support_spatial_attention_feature) # [seq_len,16,channel]
         support_seq_len = support_spitial_channel_attention_feature.shape[0]
         # choose 10 seq_len to contact from support feature evenly [seq_len,16,channel] -> [10,16,channel]
         choosed_support_feature = support_spitial_channel_attention_feature[torch.linspace(0, support_seq_len-1, self.args.k).long()] # [seq_len,16,channel] -> [sampler_seq_len,16,channel]
@@ -538,11 +541,11 @@ if __name__ == '__main__':
     @hydra.main(config_path='config', config_name='config',version_base=None)
     def main(cfg):
         model = RSTRM(cfg).cuda()
-        support_imgs = torch.rand(1,512,36,4,4).cuda()
-        target_imgs = torch.rand(1,512,128,4,4).cuda()
+        support_imgs = torch.rand(1,2048,36,4,4).cuda()
+        target_imgs = torch.rand(1,2048,250,4,4).cuda()
         a,b,c,d = model(target_imgs,support_imgs)
         print(a.shape)
-        print(b)
+        print(b.shape)
         print(c.shape)
         print(d.shape)
         return

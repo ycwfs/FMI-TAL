@@ -52,6 +52,7 @@ class VideoDataset(data.Dataset):
         video_names = os.listdir(self.extract_path)
         for video_name in video_names:
             video_name = video_name[:-4]
+            #only run one times
             # #delete the video which is not in the annotation
             # if video_name not in self.annot['database'].keys():
             #     os.remove(os.path.join(self.extract_path,video_name+'.npy'))
@@ -68,8 +69,8 @@ class VideoDataset(data.Dataset):
             #     continue
             # cap.release()
 
-
             if self.annot['database'][video_name]['subset'] == task:
+            #if self.annot['database'][video_name]['subset'] == task or self.annot['database'][video_name]['subset'] == 'validation':
                 video_class = self.annot['database'][video_name]['annotations'][0]['label']
                 if video_class not in self.video_dict.keys():
                     self.video_dict[video_class] = {}
@@ -139,7 +140,7 @@ class VideoDataset(data.Dataset):
         return {'vc':torch.tensor(class_label),'qf':torch.tensor(query_feature),'sf':torch.tensor(support_feature),'qsl':torch.tensor(segment_label),'vt':self.video_times}
 
     def __len__(self):
-        return 5000
+        return self.args.dataset_len
 
 if __name__ == '__main__':
     from torch import nn

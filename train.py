@@ -1,6 +1,7 @@
 from tqdm import tqdm
 import torch
-from torch import nn,optim
+import math
+from torch import combinations, nn,optim
 from torch.utils.data import DataLoader
 from dataset import VideoDataset
 from torch.nn.parallel import DataParallel
@@ -8,78 +9,25 @@ from torch.nn.parallel import DataParallel
 import models
 import hydra
 import numpy as np
+from utils import *
+import wandb
+from torchsummary import summary
+#from torchinfo import summary
 
 #seed_everything()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print('training on {}'.format(device))
 
-Epoches = 10
+Epoches = 100
 lr = 0.0001
 
-# compute iou
-# def iou_conculate(thresh,gt,preds):
-#     out = torch.floor(torch.max(preds[1],gt[1]) - torch.min(preds[0],gt[0]))
-#     inter = torch.ceil(torch.min(preds[1],gt[1]) - torch.max(preds[0],gt[0]))
-#     if inter/out >= thresh:
-#         return 1
-#     else:
-#         return 0
-
-def iou_conculate(thresh,gt,preds,compute_only = False):
-    out = torch.floor(torch.max(preds[1],gt[1]) - torch.min(preds[0],gt[0]))
-    inter = torch.max(torch.tensor(0),torch.ceil(torch.min(preds[1],gt[1]) - torch.max(preds[0],gt[0])))
-    if compute_only:
-        return inter/out
-    else:
-        if inter/out >= thresh:
-            return 1
-        else:
-            return 0
-    
-def np_iou_conculate(thresh,gt,preds):
-    out = np.floor(max(preds[1],gt[1]) - min(preds[0],gt[0]))
-    inter = max(0,np.ceil(min(preds[1],gt[1]) - max(preds[0],gt[0])))
-    if inter/out >= thresh:
-        return 1
-    else:
-        return 0
-    
-def postprocess(preds):
-    # preds [2,T], mean the probability of the start and end points, compute top 50 combinations and use NMS to get the final 20 results
-    
-    # Get the probabilities of start and end points
-    start_probs = preds[0]
-    end_probs = preds[1]
-    
-    # Compute the scores as the product of start and end probabilities
-    scores = torch.outer(start_probs, end_probs).cpu()
-    
-    # Get the top 30 combinations based on scores
-    top_indices = torch.topk(scores.flatten(), k=50).indices
-    top_combinations = np.unravel_index(top_indices.cpu().numpy(), scores.shape)
-    
-    # Apply non-maximum suppression (NMS) to get the final 20 results
-    final_results = []
-    for i in range(len(top_combinations[0])):
-        start = top_combinations[0][i]
-        end = top_combinations[1][i]
-        # Check if the end is greater than the start
-        if end > start:
-            overlap = False
-            for result in final_results:
-                if np_iou_conculate(0.8, result, (start, end)):
-                    overlap = True
-                    break
-            if not overlap:
-                final_results.append((start, end))
-            if len(final_results) == 20:
-                break
-    
-    return final_results
 
 @hydra.main(config_path="config", config_name="config",version_base=None)
 def train_model(args):
+    wandb.init(project="MTATF",name=f"MTATF_{args.dataset_len}len_{args.trans_linear_in_dim}dim_{args.c}c_{1-args.c}r_{lr}lr_{Epoches}epoches")
     model = models.RSTRM(args)
+    if args.checkpoint is not None:
+        model.load_state_dict(torch.load(args.checkpoint))
 
     class_criterion = nn.CrossEntropyLoss()  # standard crossentropy loss for classification
     regress_criterion = nn.MSELoss(reduction='sum')  # standard crossentropy loss for classification  sum better than mean
@@ -87,9 +35,13 @@ def train_model(args):
     optimizer = optim.Adam(model.parameters(),lr=lr,weight_decay=5e-4)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5,gamma=0.1)  # the scheduler divides the lr by 10 every 5 epochs
 
+    #model = nn.DataParallel(model, device_ids=[0,1])
     model.to(device)
+
     class_criterion.to(device)
     regress_criterion.to(device)
+
+    wandb.watch(model,regress_criterion,log="all",log_freq=10)
 
     train_dataloader = DataLoader(VideoDataset(args), batch_size=1, shuffle=False, num_workers=2)
 
@@ -140,8 +92,9 @@ def train_model(args):
                 reg_loss = regress_criterion(max_reg, segment_label.float())
 
                 # add weight(param) to class_loss and reg_loss?????
-                loss = class_loss + reg_loss
-                # ????????????
+                loss = 0.5*class_loss + 0.5*reg_loss
+                # 512 37:78 , 73:77,79 , 55:73
+                # 2048 55:75.5/76.9
                 # reg = torch.round(reg)
                 loss.backward()
                 optimizer.step()
@@ -165,22 +118,26 @@ def train_model(args):
         epoch_iou7reg = iou7_corrects / len(train_dataloader.dataset)
         epoch_iou8reg = iou8_corrects / len(train_dataloader.dataset)
         epoch_iou9reg = iou9_corrects / len(train_dataloader.dataset)
-        reg_mean = np.mean([epoch_iou1reg,epoch_iou3reg,epoch_iou5reg,epoch_iou6reg,epoch_iou7reg,epoch_iou8reg,epoch_iou9reg])
+        reg_mean = np.mean([epoch_iou5reg,epoch_iou6reg,epoch_iou7reg,epoch_iou8reg,epoch_iou9reg])
 
-        # first loop mean_acc is empty,how to solve it?
-        if len(mean_acc) == 0 or reg_mean > max(mean_acc):
-            torch.save(model.state_dict(), 'best/{}class{}reg{}.pth'.format(epoch,np.round(float(epoch_acc),4),np.round(reg_mean,4)))
-            mean_acc.append(reg_mean)
+        wandb.log({"class_loss":epoch_loss,"class_acc":epoch_acc,"iou1":epoch_iou1reg,"iou3":epoch_iou3reg,"iou5":epoch_iou5reg,"iou6":epoch_iou6reg,"iou7":epoch_iou7reg,"iou8":epoch_iou8reg,"iou9":epoch_iou9reg,"reg_mean":reg_mean})
 
-        if epoch+1 % 50 == 0 or epoch_acc >= 0.85:
-            torch.save(model.state_dict(), '{}acc{}.pth'.format(epoch,np.round(float(epoch_acc),4)))
+        if args.save_model:
+            # first loop mean_acc is empty,how to solve it?
+            if len(mean_acc) == 0 or reg_mean > max(mean_acc):
+                torch.save(model.state_dict(), 'best/2048/{}class{}reg{}.pth'.format(epoch,np.round(float(epoch_acc),4),np.round(reg_mean,4)))
+                mean_acc.append(reg_mean)
+
+        # if epoch+1 % 50 == 0 or epoch_acc >= 0.85:
+        #     torch.save(model.state_dict(), '{}acc{}.pth'.format(epoch,np.round(float(epoch_acc),4)))
         print("[{}] Epoch: {}/{} Loss: {} Acc: {}, 0.1:{}, 0.3:{}, 0.5:{}, 0.6:{},0.7:{}, 0.8:{}, 0.9:{}, mean:{}".format('training', epoch+1, Epoches, epoch_loss, epoch_acc, epoch_iou1reg,epoch_iou3reg,epoch_iou5reg,epoch_iou6reg,epoch_iou7reg,epoch_iou8reg,epoch_iou9reg,reg_mean))
         scheduler.step()
         
-    torch.save(model.state_dict(), 'best/lastresult.pth')
+    #torch.save(model.state_dict(), 'best/lastresult.pth')
 
 
-# todo: how to conculate loss???  adjust model, input feature length to decoder, encoder(support feature self-attention), decoder(query and support feature cross-attention)
+# todo: how to conculate loss???  adjust model, input feature length to decoder, encoder(support feature self-attention), decoder(query and support feature cross-attention), 
+# multi-task loss?????
 # done: (remove < 30 fps feature),  lr , change len of dataloader, input trimmed support feature,
 if __name__ == "__main__":
     #testing()
