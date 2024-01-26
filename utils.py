@@ -43,32 +43,6 @@ def np_iou_conculate(thresh,gt,preds,compute_only = False):
         return 0
 
 
-# # Apply soft non-maximum suppression (NMS) to get the best results
-def NMS(combination_scores, iou_thre, soft=False, soft_thre=0.001):
-    # Non-Maximum Suppression [3,50]
-
-    lists = sorted(combination_scores, key=lambda x: x[2], reverse=True)
-    keep = []
-
-    while lists:
-        m = lists.pop(0)
-        keep.append(m)
-        for i, pred in enumerate(lists):
-            _iou = np_iou_conculate(1,m, pred, compute_only=True)
-            if _iou >= iou_thre:
-                if soft:
-                    pred[4] *= spm(_iou, mode='gaussian', sigma=0.3)
-                    keep.append(lists.pop(i))
-                else:
-                    lists.pop(i)
-
-    if soft:
-        keep = list(filter(lambda x: x[4] >= soft_thre, keep))
-        keep = sorted(keep, key=lambda x: x[4], reverse=True)
-
-    return keep
-
-
 def postprocess(preds):
     # preds [2,T], mean the probability of the start and end points, compute top 50 combinations and use NMS to get the final 20 results
     
@@ -110,3 +84,30 @@ def postprocess(preds):
                 break
     
     return final_results
+
+
+
+# # Apply soft non-maximum suppression (NMS) to get the best results
+def NMS(combination_scores, iou_thre, soft=False, soft_thre=0.001):
+    # Non-Maximum Suppression [3,50]
+
+    lists = sorted(combination_scores, key=lambda x: x[2], reverse=True)
+    keep = []
+
+    while lists:
+        m = lists.pop(0)
+        keep.append(m)
+        for i, pred in enumerate(lists):
+            _iou = np_iou_conculate(1,m, pred, compute_only=True)
+            if _iou >= iou_thre:
+                if soft:
+                    pred[4] *= spm(_iou, mode='gaussian', sigma=0.3)
+                    keep.append(lists.pop(i))
+                else:
+                    lists.pop(i)
+
+    if soft:
+        keep = list(filter(lambda x: x[4] >= soft_thre, keep))
+        keep = sorted(keep, key=lambda x: x[4], reverse=True)
+
+    return keep

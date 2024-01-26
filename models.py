@@ -93,7 +93,7 @@ class spatial_attention(nn.Module):
         key = self.key_projection(x)
         value = self.value_projection(x)
         
-        attention,attn_map = self.Attention(query,key,value,True,0.1)
+        attention,attn_map = self.Attention(query,key,value,True,0.5)
 
         out = self.gamma * attention + residual
         out = self.sub_linear(out)
@@ -450,8 +450,8 @@ class TSN_Transformer(nn.Module):
         predict_len = query_sequence.shape[1]
         encoder_output = self.encoder(query_sequence)
         out = self.decoder(encoder_output,support_sequence) # [batch_size, seq_len, d_model]
-        outs = torch.randn(1,800,self.args.trans_linear_in_dim).to('cuda')
-        if predict_len != 800:
+        outs = torch.randn(1,1000,self.args.trans_linear_in_dim).to('cuda')
+        if predict_len != 1000:
             outs[:,:predict_len,:] = out
             outs[:,predict_len:,:] = -torch.inf
         #out = self.average(out.transpose(1,2)).transpose(1,2)
@@ -472,6 +472,8 @@ class RSTRM(nn.Module):
 
         if args.dataset == 'ActivityNet':
             self.class_numbers = 200
+        else:
+            self.class_numbers = 19
 
         self.spatial_attention = spatial_attention(self.args.trans_linear_in_dim,self.args.patch_numbers)
         self.support_channel_attention = channel_attention(self.args.trans_linear_in_dim)

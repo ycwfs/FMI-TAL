@@ -12,3 +12,4 @@ test.py
 wandb/
 convres/
 *.ipynb
+*.tar.gz

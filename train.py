@@ -24,16 +24,22 @@ lr = 0.0001
 
 @hydra.main(config_path="config", config_name="config",version_base=None)
 def train_model(args):
-    wandb.init(project="MTATF",name=f"MTATF_{args.dataset_len}len_{args.trans_linear_in_dim}dim_{args.c}c_{1-args.c}r_{lr}lr_{Epoches}epoches")
     model = models.RSTRM(args)
     if args.checkpoint is not None:
         model.load_state_dict(torch.load(args.checkpoint))
 
     class_criterion = nn.CrossEntropyLoss()  # standard crossentropy loss for classification
-    regress_criterion = nn.MSELoss(reduction='sum')  # standard crossentropy loss for classification  sum better than mean
+    #reduction 参数的值是 "none" 时，损失函数的输出形状与输入数据的形状相同。当 reduction 参数的值是 "mean" 或 "sum" 时，损失函数的输出形状是一个标量。
+    #regress_criterion = nn.MSELoss(reduction='sum')  # sum better than mean
+    regress_criterion = nn.SmoothL1Loss(reduction='sum')
     #optimizer = optim.SGD(model.parameters(),lr=lr,weight_decay=5e-4)
     optimizer = optim.Adam(model.parameters(),lr=lr,weight_decay=5e-4)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5,gamma=0.1)  # the scheduler divides the lr by 10 every 5 epochs
+
+    params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print("Total Trainable Params: ", params)
+
+    ## 级联损失 or 连接损失
 
     #model = nn.DataParallel(model, device_ids=[0,1])
     model.to(device)
@@ -41,7 +47,10 @@ def train_model(args):
     class_criterion.to(device)
     regress_criterion.to(device)
 
-    wandb.watch(model,regress_criterion,log="all",log_freq=10)
+    if args.wandb:
+        wandb.init(project=f"MTATF_{args.dataset}",name=f"MTATF_alld_{args.dataset_len}len_{args.shot}shot_{args.trans_linear_in_dim}dim_{args.c}c_{int(1-args.c)}r_{lr}lr_{Epoches}epoches")
+        wandb.watch(model,regress_criterion,log="all",log_freq=10)
+        wandb.log({'params': params})
 
     train_dataloader = DataLoader(VideoDataset(args), batch_size=1, shuffle=False, num_workers=2)
 
@@ -92,7 +101,7 @@ def train_model(args):
                 reg_loss = regress_criterion(max_reg, segment_label.float())
 
                 # add weight(param) to class_loss and reg_loss?????
-                loss = 0.5*class_loss + 0.5*reg_loss
+                loss = args.c*class_loss + (1-args.c)*reg_loss
                 # 512 37:78 , 73:77,79 , 55:73
                 # 2048 55:75.5/76.9
                 # reg = torch.round(reg)
@@ -120,10 +129,10 @@ def train_model(args):
         epoch_iou9reg = iou9_corrects / len(train_dataloader.dataset)
         reg_mean = np.mean([epoch_iou5reg,epoch_iou6reg,epoch_iou7reg,epoch_iou8reg,epoch_iou9reg])
 
-        wandb.log({"class_loss":epoch_loss,"class_acc":epoch_acc,"iou1":epoch_iou1reg,"iou3":epoch_iou3reg,"iou5":epoch_iou5reg,"iou6":epoch_iou6reg,"iou7":epoch_iou7reg,"iou8":epoch_iou8reg,"iou9":epoch_iou9reg,"reg_mean":reg_mean})
+        if args.wandb:
+            wandb.log({"class_loss":epoch_loss,"class_acc":epoch_acc,"iou1":epoch_iou1reg,"iou3":epoch_iou3reg,"iou5":epoch_iou5reg,"iou6":epoch_iou6reg,"iou7":epoch_iou7reg,"iou8":epoch_iou8reg,"iou9":epoch_iou9reg,"reg_mean":reg_mean})
 
         if args.save_model:
-            # first loop mean_acc is empty,how to solve it?
             if len(mean_acc) == 0 or reg_mean > max(mean_acc):
                 torch.save(model.state_dict(), 'best/2048/{}class{}reg{}.pth'.format(epoch,np.round(float(epoch_acc),4),np.round(reg_mean,4)))
                 mean_acc.append(reg_mean)
@@ -132,8 +141,6 @@ def train_model(args):
         #     torch.save(model.state_dict(), '{}acc{}.pth'.format(epoch,np.round(float(epoch_acc),4)))
         print("[{}] Epoch: {}/{} Loss: {} Acc: {}, 0.1:{}, 0.3:{}, 0.5:{}, 0.6:{},0.7:{}, 0.8:{}, 0.9:{}, mean:{}".format('training', epoch+1, Epoches, epoch_loss, epoch_acc, epoch_iou1reg,epoch_iou3reg,epoch_iou5reg,epoch_iou6reg,epoch_iou7reg,epoch_iou8reg,epoch_iou9reg,reg_mean))
         scheduler.step()
-        
-    #torch.save(model.state_dict(), 'best/lastresult.pth')
 
 
 # todo: how to conculate loss???  adjust model, input feature length to decoder, encoder(support feature self-attention), decoder(query and support feature cross-attention), 
