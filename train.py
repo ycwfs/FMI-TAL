@@ -73,11 +73,24 @@ def train_model(args):
                 support_feature = inputs['sf'][0].cuda()
                 query_feature = inputs['qf'][0].cuda()
                 class_label = inputs['vc'].cuda()
-                segment_label = inputs['qsl'][0].cuda()
+
+                # one instance
+                #segment_label = inputs['qsl'][0].cuda()
+
+                # multi instances
+                segment_label = inputs['qsl']
+                segment_labels = []
+                for i in segment_label:
+                    segment_labels.append(i['segment'])
+                segment_labels = torch.tensor(segment_labels).cuda()
+                numbers_of_segment = inputs['nof'].cuda()
+
                 #vt = inputs['vt']
 
                 optimizer.zero_grad()
 
+
+                # set nof regress at end
                 logical,reg,_,_ = model(query_feature,support_feature)
 
                 preds = nn.Softmax(dim=-1)(logical).argmax(dim=-1)

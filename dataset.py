@@ -104,7 +104,8 @@ class VideoDataset(data.Dataset):
     def get_labels(self,video_list,video_class):
         labels = []
         for video_name in video_list:
-            labels.append(self.video_dict[video_class][video_name]['annotations'][0]['segment'])
+            #labels.append(self.video_dict[video_class][video_name]['annotations'][0]['segment'])
+            labels.append(self.video_dict[video_class][video_name]['annotations'])
         return labels
 
     #todo: may be have repeat class,seed infect the random?
@@ -128,6 +129,7 @@ class VideoDataset(data.Dataset):
             query_feature = np.array(videos[:self.args.query_per_class]).squeeze(0)
             class_label = self.label2index[video_classes[0]]
             segment_label = np.array(labels[:self.args.query_per_class]).squeeze(0)
+            numbers_of_segment = len(segment_label)
 
         if self.args.shot == 1:
             support_feature = np.array(videos[self.args.query_per_class:]).squeeze(0)
@@ -153,7 +155,7 @@ class VideoDataset(data.Dataset):
                 support_feature = np.repeat(support_feature,10,axis=1)
 
 
-        return {'vc':torch.tensor(class_label),'qf':torch.tensor(query_feature),'sf':torch.tensor(support_feature),'qsl':torch.tensor(segment_label),'vt':self.video_times}
+        return {'vc':torch.tensor(class_label),'qf':torch.tensor(query_feature),'sf':torch.tensor(support_feature),'qsl':torch.tensor(segment_label),'nof':torch.tensor(numbers_of_segment),'vt':self.video_times}
 
     def __len__(self):
         return self.args.dataset_len

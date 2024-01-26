@@ -11,5 +11,5 @@ test.py
 *.out
 wandb/
 convres/
-*.ipynb
+model.ipynb
 *.tar.gz
