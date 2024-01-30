@@ -1,4 +1,5 @@
 from ast import arg
+import enum
 import os
 import math
 import sys
@@ -152,10 +153,7 @@ class channel_attention(nn.Module):
 
 
 # sampler
-def order_topk(x, k=10):
-    if len(x.shape) > 2:
-        x = x[:,:,0]
-    return F.one_hot(torch.sort(torch.topk(x, k=10, dim=-1)[-1])[0], list(x.shape)[-1]).transpose(-1,-2).float()
+
 class Generator(nn.Module):
     def __init__(self, args,insize=512, outsize=512, z_dim=64, bias=False):
         super().__init__()
@@ -211,7 +209,11 @@ class PositionalEmbedding(nn.Module):
         x = x.view(-1, self.seq_len, self.dim)
         x = x + self.pe[:,:]
         return x.view(-1, self.dim)
-
+    
+def order_topk(x, k=10):
+    if len(x.shape) > 2:
+        x = x[:,:,0]
+    return F.one_hot(torch.sort(torch.topk(x, k=10, dim=-1)[-1])[0], list(x.shape)[-1]).transpose(-1,-2).float()
 class Sampler(nn.Module):
     def __init__(self,args):
         super(Sampler,self).__init__()
@@ -441,6 +443,14 @@ class TSN_Transformer(nn.Module):
         self.end_projection = nn.Sequential(nn.Conv1d(args.trans_linear_in_dim,int(args.trans_linear_in_dim/2),1),
                                         nn.Conv1d(int(args.trans_linear_in_dim/2),int(args.trans_linear_in_dim/4),1),
                                         nn.Conv1d(int(args.trans_linear_in_dim/4),1,1))
+        self.softmax = nn.Softmax(dim=-1)
+        # reg how many action segments, use binary classify to predict larger softmax point weather a segment start or end
+        # self.reg_number_of_segment = nn.Sequential(nn.Linear(2000,1000),
+        #                                            nn.ReLU(),
+        #                                             nn.Linear(1000,500),
+        #                                             nn.ReLU(),
+        #                                             nn.Linear(500,1),
+        #                                             )
 
     def forward(self,query_sequence,support_sequence):
         '''
@@ -456,10 +466,12 @@ class TSN_Transformer(nn.Module):
             outs[:,predict_len:,:] = -torch.inf
         #out = self.average(out.transpose(1,2)).transpose(1,2)
         start = self.start_projection(outs.transpose(1,2))
-        start = start.squeeze(1).squeeze(0)[:predict_len]
         end = self.end_projection(outs.transpose(1,2))
-        end = end.squeeze(1).squeeze(0)[:predict_len]
+        #nos = self.reg_number_of_segment(torch.stack((start,end),dim=1).reshape(-1))
+        start = self.softmax(start.squeeze(1).squeeze(0)[:predict_len])
+        end = self.softmax(end.squeeze(1).squeeze(0)[:predict_len])
         outs = torch.stack((start,end),dim=0)
+        #return outs,nos
         return outs
 
 
@@ -478,16 +490,18 @@ class RSTRM(nn.Module):
         self.spatial_attention = spatial_attention(self.args.trans_linear_in_dim,self.args.patch_numbers)
         self.support_channel_attention = channel_attention(self.args.trans_linear_in_dim)
         self.query_channel_attention = channel_attention(self.args.trans_linear_in_dim)
-        self.averagepool = nn.AdaptiveMaxPool3d((40,None,None))
+        self.averagepool = nn.AdaptiveMaxPool3d((args.sampler_seq_len,None,None))
         self.squeeze_query_patch = nn.Conv3d(self.args.trans_linear_in_dim,self.args.trans_linear_in_dim,(1,4,4))
         self.squeeze_support_patch = nn.Conv3d(self.args.trans_linear_in_dim,self.args.trans_linear_in_dim,(1,4,4))
+
+        self.cosine_similarity = torch.nn.CosineSimilarity(dim=0, eps=1e-8)
 
         if args.use_conv:
             self.classfication = nn.Sequential(nn.Conv3d(args.trans_linear_in_dim,512,(1,4,4)),
                                                nn.ReLU())
             self.last = nn.Linear(512*20,self.class_numbers)
         else:
-            self.classfication = nn.Linear(20*16*self.args.trans_linear_in_dim,self.class_numbers)
+            self.classfication = nn.Linear(int(self.args.classify_len)*16*args.trans_linear_in_dim,self.class_numbers)
 
         self.softmax = nn.Softmax(dim=-1)
         self.relu = nn.ReLU()
@@ -503,10 +517,10 @@ class RSTRM(nn.Module):
 
         # for classify query feature use sampler
         query_spitial_channel_attention_feature = query_spitial_channel_attention_feature.reshape(self.args.trans_linear_in_dim,-1,4,4).unsqueeze(0) # [1,512,seq_len,4,4]
-        average_qf = self.averagepool(query_spitial_channel_attention_feature) # [bs,channel,40,4,4]
+        average_qf = self.averagepool(query_spitial_channel_attention_feature) # [bs,channel,40,4,4]  seq_len ->100????
         sampler_infea = average_qf.mean(dim=-1).mean(dim=-1) # [bs,channel,40]
         indices,_,_ = self.sampler(sampler_infea) # inuput:[bs,channel,40] -> indices [bs,10,40] * reshape_feature [bs,40,-1] = [bs,10,512,4,4]
-        sampled_feature = torch.bmm(indices,average_qf.reshape(1,self.args.sampler_seq_len,-1)).reshape(1,-1,10,4,4) # [bs,512,10,4,4]
+        sampled_feature = torch.bmm(indices,average_qf.reshape(1,self.args.sampler_seq_len,-1)).reshape(1,-1,self.args.k,4,4) # [bs,512,10,4,4]
 
         ## logits
         # for 1 way 1 shot, we only need to tackle the support video once
@@ -517,14 +531,15 @@ class RSTRM(nn.Module):
         # same channel attention  support_spitial_channel_attention_feature = self.support_channel_attention(support_spatial_attention_feature) # [seq_len,16,channel]
         support_spitial_channel_attention_feature = self.query_channel_attention(support_spatial_attention_feature) # [seq_len,16,channel]
         support_seq_len = support_spitial_channel_attention_feature.shape[0]
-        # choose 10 seq_len to contact from support feature evenly [seq_len,16,channel] -> [10,16,channel]
+        # choose 10 seq_len to contact from support feature evenly [seq_len,16,channel] -> [50,16,channel]
         choosed_support_feature = support_spitial_channel_attention_feature[torch.linspace(0, support_seq_len-1, self.args.k).long()] # [seq_len,16,channel] -> [sampler_seq_len,16,channel]
 
         # contact 10 seq_len query video [10,512,4,4] and support video [seq_len,16,512] for classification
-        classify_f = torch.concat((sampled_feature.squeeze(0).reshape(-1,self.args.patch_numbers,self.args.trans_linear_in_dim),choosed_support_feature),dim=0) #[20,16,512]
+        classify_f = torch.concat((sampled_feature.squeeze(0).reshape(-1,self.args.patch_numbers,self.args.trans_linear_in_dim),choosed_support_feature),dim=0) #[60,16,512] 50 + 50
         # need conv???
         #logits = self.last(self.classfication(classify_f.reshape(self.args.trans_linear_in_dim,-1,4,4).unsqueeze(0)).reshape(-1)) # [1,512,20,4,4] -> [1,512,20,1,1] -> [1,512,20]
         logits = self.classfication(classify_f.reshape(-1))
+        # logits = nn.Softmax(dim=-1)(logits) .........fxxx
 
         # use conv3d instead of mean
         #aug_query_feature = (sampled_feature.mean(dim=2,keepdim=True) + query_spitial_channel_attention_feature).mean(-1).mean(-1) #[1,512,seq_len]
@@ -536,20 +551,38 @@ class RSTRM(nn.Module):
         # for 1 way n shot
         #aug_query_feature = F.interpolate(aug_query_feature,size=(support_seq_len),mode='nearest') #[1,512,seq_len]
         reg = self.tsn_transformer(aug_query_feature.transpose(1,2),support_spitial_channel_attention_feature.mean(-2).unsqueeze(0))
-        return logits,reg,query_attn_map,support_attn_map
+
+        # according to the softmaxed reg predict the start and end of the action, find first 30% probability points to classfiy weather it is a action
+        start = reg[0]; end = reg[1]
+        sorted_start = torch.topk(start,int(query_seq_len),dim=-1)[1]
+        sorted_end = torch.topk(end,int(query_seq_len),dim=-1)[1]
+        # start_feature = query_spitial_channel_attention_feature[:,:,sorted_start,:,:]
+        # end_feature = query_spitial_channel_attention_feature[:,:,sorted_end,:,:]
+        for id,idx in enumerate(sorted_start):
+            if idx < 3:
+                continue
+            if self.cosine_similarity(query_spitial_channel_attention_feature[:,:,idx,:,:].reshape(-1),query_spitial_channel_attention_feature[:,:,idx-2,:,:].reshape(-1)) > 0.95:
+                sorted_start.pop(id)
+        for id,idx in enumerate(sorted_end):
+            if idx > query_seq_len - 3:
+                continue
+            if self.cosine_similarity(query_spitial_channel_attention_feature[:,:,idx,:,:].reshape(-1),query_spitial_channel_attention_feature[:,:,idx+2,:,:].reshape(-1)) > 0.95:
+                sorted_end.pop(id)
+
+        return logits,sorted_start,sorted_end,query_attn_map,support_attn_map
 
 ### more support feature
 if __name__ == '__main__':
     @hydra.main(config_path='config', config_name='config',version_base=None)
     def main(cfg):
         model = RSTRM(cfg).cuda()
-        support_imgs = torch.rand(1,2048,36,4,4).cuda()
-        target_imgs = torch.rand(1,2048,250,4,4).cuda()
-        a,b,c,d = model(target_imgs,support_imgs)
+        support_imgs = torch.rand(1,512,36,4,4).cuda()
+        target_imgs = torch.rand(1,512,250,4,4).cuda()
+        a,b,c,*_ = model(target_imgs,support_imgs)
         print(a.shape)
         print(b.shape)
-        print(c.shape)
-        print(d.shape)
+        #print(c)
+        #print(d.shape)
         return
 
     #seed_everything()

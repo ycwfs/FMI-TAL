@@ -1,3 +1,4 @@
+from ast import mod
 from tqdm import tqdm
 import torch
 import math
@@ -26,12 +27,19 @@ lr = 0.0001
 def train_model(args):
     model = models.RSTRM(args)
     if args.checkpoint is not None:
-        model.load_state_dict(torch.load(args.checkpoint))
+        md = torch.load(args.checkpoint)
+        params = model.state_dict()
+        for k,v in md.items():
+            if k in params:
+                params[k] = v
+        model.load_state_dict(params)
 
     class_criterion = nn.CrossEntropyLoss()  # standard crossentropy loss for classification
     #reduction 参数的值是 "none" 时，损失函数的输出形状与输入数据的形状相同。当 reduction 参数的值是 "mean" 或 "sum" 时，损失函数的输出形状是一个标量。
     #regress_criterion = nn.MSELoss(reduction='sum')  # sum better than mean
     regress_criterion = nn.SmoothL1Loss(reduction='sum')
+    nos_criterion = nn.MSELoss(reduction='sum')
+
     #optimizer = optim.SGD(model.parameters(),lr=lr,weight_decay=5e-4)
     optimizer = optim.Adam(model.parameters(),lr=lr,weight_decay=5e-4)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5,gamma=0.1)  # the scheduler divides the lr by 10 every 5 epochs
@@ -46,6 +54,9 @@ def train_model(args):
 
     class_criterion.to(device)
     regress_criterion.to(device)
+    nos_criterion.to(device)
+
+    save_name=f"MTATF_{args.dataset}alld_{args.dataset_len}len_{args.shot}shot_{args.trans_linear_in_dim}dim_{args.c}c_{int(1-args.c)}r_{lr}lr_{Epoches}epoches"
 
     if args.wandb:
         wandb.init(project=f"MTATF_{args.dataset}",name=f"MTATF_alld_{args.dataset_len}len_{args.shot}shot_{args.trans_linear_in_dim}dim_{args.c}c_{int(1-args.c)}r_{lr}lr_{Epoches}epoches")
@@ -57,15 +68,7 @@ def train_model(args):
     mean_acc = []
     for epoch in range(Epoches):
         # reset the running loss and corrects
-        running_loss = 0.0
-        class_corrects = 0.0
-        iou1_corrects = 0.0
-        iou3_corrects = 0.0
-        iou5_corrects = 0.0
-        iou6_corrects = 0.0
-        iou7_corrects = 0.0
-        iou8_corrects = 0.0
-        iou9_corrects = 0.0
+        running_loss = 0.0;class_corrects = 0.0;iou1_corrects = 0.0;iou3_corrects = 0.0;iou5_corrects = 0.0;iou6_corrects = 0.0;iou7_corrects = 0.0;iou8_corrects = 0.0;iou9_corrects = 0.0
 
         model.train()
         for inputs in tqdm(train_dataloader):
@@ -73,17 +76,13 @@ def train_model(args):
                 support_feature = inputs['sf'][0].cuda()
                 query_feature = inputs['qf'][0].cuda()
                 class_label = inputs['vc'].cuda()
+                number_of_segment = inputs['nos'].cuda()
 
                 # one instance
-                #segment_label = inputs['qsl'][0].cuda()
+                segment_label = inputs['qsl'][0][0].cuda()
 
                 # multi instances
-                segment_label = inputs['qsl']
-                segment_labels = []
-                for i in segment_label:
-                    segment_labels.append(i['segment'])
-                segment_labels = torch.tensor(segment_labels).cuda()
-                numbers_of_segment = inputs['nof'].cuda()
+                #segment_label = inputs['qsl'].cuda()
 
                 #vt = inputs['vt']
 
@@ -91,14 +90,16 @@ def train_model(args):
 
 
                 # set nof regress at end
-                logical,reg,_,_ = model(query_feature,support_feature)
+                #logical,reg,nos,*_ = model(query_feature,support_feature)
+                logical,ss,se,*_ = model(query_feature,support_feature)
 
-                preds = nn.Softmax(dim=-1)(logical).argmax(dim=-1)
+                preds = nn.Softmax(0)(logical).argmax(dim=-1)
 
-                start = nn.Softmax(dim=-1)(reg[0])
-                end = nn.Softmax(dim=-1)(reg[1])
-                reg = torch.stack((start,end),dim=0)
-                reg = torch.tensor(postprocess(reg)).cuda()
+                # do it in model
+                # start = nn.Softmax(dim=-1)(reg[0])
+                # end = nn.Softmax(dim=-1)(reg[1])
+                # reg = torch.stack((start,end),dim=0)
+                reg = torch.tensor(postprocess(ss,se)).cuda()
                 
                 ious = []
                 # compute the max iou between the predict and ground truth
@@ -112,6 +113,7 @@ def train_model(args):
 
                 class_loss = class_criterion(logical.unsqueeze(0), class_label.long())
                 reg_loss = regress_criterion(max_reg, segment_label.float())
+                #nos_loss = nos_criterion(nos, number_of_segment.float())
 
                 # add weight(param) to class_loss and reg_loss?????
                 loss = args.c*class_loss + (1-args.c)*reg_loss
@@ -131,6 +133,8 @@ def train_model(args):
                 iou8_corrects += np.sum(iou_conculate(0.8,segment_label,max_reg))
                 iou9_corrects += np.sum(iou_conculate(0.9,segment_label,max_reg))
 
+                #print(nos,number_of_segment)
+
         epoch_loss = running_loss / len(train_dataloader.dataset)
         epoch_acc = class_corrects / len(train_dataloader.dataset)
         epoch_iou1reg = iou1_corrects / len(train_dataloader.dataset)
@@ -147,7 +151,7 @@ def train_model(args):
 
         if args.save_model:
             if len(mean_acc) == 0 or reg_mean > max(mean_acc):
-                torch.save(model.state_dict(), 'best/2048/{}class{}reg{}.pth'.format(epoch,np.round(float(epoch_acc),4),np.round(reg_mean,4)))
+                torch.save(model.state_dict(), 'best/2048/{}_{}class{}reg{}.pth'.format(epoch,save_name,np.round(float(epoch_acc),4),np.round(reg_mean,4)))
                 mean_acc.append(reg_mean)
 
         # if epoch+1 % 50 == 0 or epoch_acc >= 0.85:

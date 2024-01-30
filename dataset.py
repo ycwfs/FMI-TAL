@@ -131,6 +131,12 @@ class VideoDataset(data.Dataset):
             segment_label = np.array(labels[:self.args.query_per_class]).squeeze(0)
             numbers_of_segment = len(segment_label)
 
+            # multi instances
+            segment_labels = []
+            for i in segment_label:
+                segment_labels.append(i['segment'])
+
+            
         if self.args.shot == 1:
             support_feature = np.array(videos[self.args.query_per_class:]).squeeze(0)
             support_segment = np.array(labels[self.args.query_per_class:]).squeeze(0)
@@ -147,15 +153,15 @@ class VideoDataset(data.Dataset):
         else:
             support_feature = []
             for idx,support in enumerate(videos[self.args.query_per_class:]):
-                start = int(labels[idx+self.args.query_per_class][0])
-                end = int(labels[idx+self.args.query_per_class][1])
+                start = int(labels[idx+self.args.query_per_class][0]['segment'][0])
+                end = int(labels[idx+self.args.query_per_class][0]['segment'][1])
                 support_feature.append(support[:,start:end,:,:])
             support_feature = np.concatenate(support_feature,axis=1)
             if support_feature.shape[1] < 10:
                 support_feature = np.repeat(support_feature,10,axis=1)
 
 
-        return {'vc':torch.tensor(class_label),'qf':torch.tensor(query_feature),'sf':torch.tensor(support_feature),'qsl':torch.tensor(segment_label),'nof':torch.tensor(numbers_of_segment),'vt':self.video_times}
+        return {'vc':torch.tensor(class_label),'qf':torch.tensor(query_feature),'sf':torch.tensor(support_feature),'qsl':torch.tensor(segment_labels),'nos':torch.tensor(numbers_of_segment),'vt':self.video_times}
 
     def __len__(self):
         return self.args.dataset_len

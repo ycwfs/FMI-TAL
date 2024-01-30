@@ -43,12 +43,12 @@ def np_iou_conculate(thresh,gt,preds,compute_only = False):
         return 0
 
 
-def postprocess(preds):
+def postprocess(ss,se):
     # preds [2,T], mean the probability of the start and end points, compute top 50 combinations and use NMS to get the final 20 results
     
     # Get the probabilities of start and end points
-    start_probs = preds[0]
-    end_probs = preds[1]
+    start_probs = ss
+    end_probs = se
     
     # Compute the scores as the product of start and end probabilities
     scores = torch.outer(start_probs, end_probs).cpu()
