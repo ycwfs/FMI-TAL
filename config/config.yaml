@@ -15,8 +15,8 @@ dataset_len: 1000
 #classify_len: 100
 classify_len: 20
 
-#checkpoint: /data1/wangqiurui/code/DA TSNFormer/best/9class0.545reg0.6143.pth
-checkpoint: /data1/wangqiurui/code/DA TSNFormer/best/15class0.6915reg0.4918.pth
+
+checkpoint: /data1/code/DA TSNFormer/best/15class0.6915reg0.4918.pth
 #checkpoint: 
 #dataset: THUMOS14
 dataset: ActivityNet
@@ -58,15 +58,15 @@ n_heads: 8  # number of heads in Multi-Head Attention
 
 data_paths:
   ActivityNet:
-    original: /data1/wangqiurui/code/datasets/ActivityNet/v1-3/
-    #extracted: /data1/wangqiurui/code/datasets/ActivityNet/extracted_frames2048/
+    original: /data1/code/datasets/ActivityNet/v1-3/
+    #extracted: /data1/code/datasets/ActivityNet/extracted_frames2048/
     # 512
-    extracted: /data1/wangqiurui/code/datasets/ActivityNet/c3dfeature/
-    annotation: /data1/wangqiurui/code/datasets/ActivityNet/anet1.3_tsp_filtered.json
-    action_name: /data1/wangqiurui/code/datasets/ActivityNet/action_name.csv
+    extracted: /data1/code/datasets/ActivityNet/c3dfeature/
+    annotation: /data1/code/datasets/ActivityNet/anet1.3_tsp_filtered.json
+    action_name: /data1/code/datasets/ActivityNet/action_name.csv
   THUMOS14:
-    extracted: /data1/wangqiurui/code/datasets/THUMOS14/c3dfeature
-    annotation: /data1/wangqiurui/code/datasets/thumos/annotations/thumos14_30fps.json
+    extracted: /data1/code/datasets/THUMOS14/c3dfeature
+    annotation: /data1/code/datasets/thumos/annotations/thumos14_30fps.json
 
 paths:
   log: ./runs
