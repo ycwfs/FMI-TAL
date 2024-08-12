@@ -186,34 +186,4 @@ if __name__ == '__main__':
             print(i['sf'].shape)
             print(i['qsl'])
             print(i['vt'])
-
-            # for j in i['sf']:
-            #     print(j.shape)
-        #     print(i['qv'][0].shape)
-        #     print(i['ql'][0])
-        #     video = i['qv'][0]
-        #     # video = np.expand_dims(video.transpose(3,0,1,2),0)
-        #     # video = c3d(torch.from_numpy(video))
-        #     print(video.shape)
-            # start = int(int(i['ql'][0][0])/30)
-            # end = int(int(i['ql'][0][1])/30)
-
-
-            # start = int(i['ql'][0][0])
-            # end = int(i['ql'][0][1])
-            # print(start,end)
-            # label = np.zeros(i['qf'][0].shape[0])
-            # label[start:end] = 1
-            # #pca_result_50 = pca_50.fit_transform(i['qf'][0])
-            # result = tsne.fit_transform((i['qf'][0]))
-            # plt.scatter(result[:,0],result[:,1],c=label,s=5,cmap='Spectral')
-            # plt.gca().set_aspect('equal', 'datalim')
-            # plt.savefig('featuretsne.png')
-
-            # after = sp(video.reshape(video.shape[0],-1,3))
-            # pca_result_50 = pca_50.fit_transform(after.reshape(after.shape[0],-1).detach().numpy())
-            # result = tsne.fit_transform(pca_result_50)
-            # plt.scatter(result[:,0],result[:,1],c=label,s=5,cmap='Spectral')
-            # plt.gca().set_aspect('equal', 'datalim')
-            # plt.savefig('after.png')
     main()
