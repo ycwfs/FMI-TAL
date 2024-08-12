@@ -444,13 +444,6 @@ class TSN_Transformer(nn.Module):
                                         nn.Conv1d(int(args.trans_linear_in_dim/2),int(args.trans_linear_in_dim/4),1),
                                         nn.Conv1d(int(args.trans_linear_in_dim/4),1,1))
         self.softmax = nn.Softmax(dim=-1)
-        # reg how many action segments, use binary classify to predict larger softmax point weather a segment start or end
-        # self.reg_number_of_segment = nn.Sequential(nn.Linear(2000,1000),
-        #                                            nn.ReLU(),
-        #                                             nn.Linear(1000,500),
-        #                                             nn.ReLU(),
-        #                                             nn.Linear(500,1),
-        #                                             )
 
     def forward(self,query_sequence,support_sequence):
         '''
@@ -581,8 +574,6 @@ if __name__ == '__main__':
         a,b,c,*_ = model(target_imgs,support_imgs)
         print(a.shape)
         print(b.shape)
-        #print(c)
-        #print(d.shape)
         return
 
     #seed_everything()
